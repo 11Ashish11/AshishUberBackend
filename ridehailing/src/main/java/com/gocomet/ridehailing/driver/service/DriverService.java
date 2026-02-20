@@ -11,6 +11,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
 import java.util.UUID;
 
 @Service
@@ -88,6 +89,16 @@ public class DriverService {
 
         log.info("Driver {} is now OFFLINE", driverId);
         return toResponse(driver);
+    }
+
+    /**
+     * Fetch all drivers (used by frontend for driver selection/demo).
+     */
+    public List<DriverResponse> getAllDrivers() {
+        return driverRepository.findAll()
+                .stream()
+                .map(this::toResponse)
+                .toList();
     }
 
     public Driver getDriverEntity(UUID driverId) {

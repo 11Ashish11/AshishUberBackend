@@ -11,6 +11,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -23,6 +24,14 @@ public class DriverController {
     private final RideService rideService;
     private final MatchingService matchingService;
     private final NotificationService notificationService;
+
+    /**
+     * GET /v1/drivers — List all drivers (for demo/frontend selection)
+     */
+    @GetMapping
+    public ResponseEntity<List<DriverResponse>> getDrivers() {
+        return ResponseEntity.ok(driverService.getAllDrivers());
+    }
 
     /**
      * POST /v1/drivers/{id}/location — Send driver location update

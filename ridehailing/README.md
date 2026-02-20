@@ -82,6 +82,8 @@ src/main/java/com/gocomet/ridehailing/
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| GET | `/v1/riders` | List all riders (for frontend/demo) |
+| GET | `/v1/drivers` | List all drivers (for frontend/demo) |
 | POST | `/v1/rides` | Create ride request |
 | GET | `/v1/rides/{id}` | Get ride status |
 | POST | `/v1/rides/{id}/cancel` | Cancel a ride |
