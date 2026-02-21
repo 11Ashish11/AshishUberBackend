@@ -1,6 +1,6 @@
 # GoComet Ride-Hailing Platform
 
-A multi-tenant ride-hailing system (Uber/Ola clone) built as part of the GoComet SDE-2 assignment. Supports real-time driver-rider matching, dynamic surge pricing, trip lifecycle management, and payment processing.
+A multi-tenant ride-hailing system (Uber/Ola clone) built as part of the GoComet SDE-2 assignment. Supports real-time driver-rider matching, dynamic surge pricing, trip lifecycle management, payment processing, and **event-driven architecture via Apache Kafka**.
 
 ## Requirements Coverage
 
@@ -23,6 +23,7 @@ A multi-tenant ride-hailing system (Uber/Ola clone) built as part of the GoComet
 | Backend | Java 17, Spring Boot 4.0.3 |
 | Database | PostgreSQL 16 |
 | Cache/Geo | Redis 7 (GEO index, distributed locks) |
+| Event Streaming | Apache Kafka 3.9 (KRaft mode — no ZooKeeper) |
 | Frontend | React (with WebSocket live updates) |
 | Containerization | Docker Compose |
 | Monitoring | New Relic APM |
@@ -42,10 +43,17 @@ A multi-tenant ride-hailing system (Uber/Ola clone) built as part of the GoComet
   |  [Ride]  [Driver]  [Trip]                |
   |  [Payment]  [Pricing]  [Notification]    |
   +-------------------------------------------+
-       |                    |
-       v                    v
-  [PostgreSQL 16]      [Redis 7]
-  (durable state)      (geo, locks, cache)
+       |                    |              |
+       v                    v              v
+  [PostgreSQL 16]      [Redis 7]     [Kafka 3.9]
+  (durable state)   (geo, locks)   (event stream)
+```
+
+**Kafka Topics:**
+```
+ride-events      ← all ride state transitions (key=rideId)
+driver-locations ← high-frequency GPS pings  (key=driverId)
+ride-requests    ← rider booking commands     (key=requestId)
 ```
 
 **Why Modular Monolith?** Clean separation of concerns with the operational simplicity of a single deployment. Each module has its own controller, service, repository, and model layers. In production, these can be independently deployed as microservices.
@@ -61,21 +69,25 @@ A multi-tenant ride-hailing system (Uber/Ola clone) built as part of the GoComet
 - **Idempotent APIs** — Both ride creation and payments support idempotency keys to prevent duplicates
 - **WebSocket Live Updates** — STOMP over WebSocket pushes ride status and driver locations to frontend
 - **Haversine Distance** — Accurate fare calculation using great-circle distance formula
+- **Kafka Event Streaming** — Every ride state transition and driver GPS update is published to Kafka for downstream consumers (analytics, billing, notifications)
 
 ## Project Structure
 
 ```
 src/main/java/com/gocomet/ridehailing/
 ├── common/                  # Shared config, exceptions, utilities
-│   ├── config/              # Redis, WebSocket, CORS, DataSeeder
+│   ├── config/              # Redis, WebSocket, CORS, DataSeeder, KafkaConfig
+│   ├── event/               # RideEvent (shared Kafka event model)
 │   └── exception/           # Global exception handler
 ├── driver/                  # Driver profiles, location ingestion
 │   ├── controller/          # POST /v1/drivers/{id}/location, /accept, /online, /offline
+│   ├── event/               # DriverLocationProducer, DriverLocationConsumer
 │   ├── service/             # DriverService, LocationService (Redis GEO)
 │   ├── model/               # Driver entity, DriverStatus, VehicleType
 │   └── repository/
 ├── ride/                    # Ride requests and matching
 │   ├── controller/          # POST /v1/rides, GET /v1/rides/{id}
+│   ├── event/               # RideEventProducer, RideEventConsumer
 │   ├── service/             # RideService, MatchingService (the brain)
 │   ├── model/               # Ride, RideAssignment, RideStatus, AssignmentStatus
 │   └── repository/
@@ -127,7 +139,10 @@ src/main/java/com/gocomet/ridehailing/
 docker compose up -d
 ```
 
-This starts PostgreSQL (port 5433) and Redis (port 6379).
+This starts:
+- PostgreSQL on port **5433**
+- Redis on port **6379**
+- Kafka (KRaft) on port **9092**
 
 ### 2. Start Backend
 
@@ -136,7 +151,7 @@ cd ridehailing
 ./gradlew bootRun
 ```
 
-The app starts on `http://localhost:8080`. On first run, it seeds the database with 2 test riders and 5 test drivers around Bangalore.
+The app starts on `http://localhost:8080`. On first run, it seeds the database with 2 test riders and 5 test drivers around Bangalore. Kafka topics are auto-created on first message.
 
 ### 3. Test the Full Ride Flow
 
@@ -189,6 +204,24 @@ curl -X POST http://localhost:8080/v1/payments \
     "idempotencyKey": "pay-001"
   }'
 ```
+
+## Kafka Event Flow
+
+Every key action in the ride lifecycle automatically publishes a message to Kafka:
+
+| Trigger | Topic | Event Type | Key |
+|---|---|---|---|
+| Rider creates a ride | `ride-events` | `REQUESTED` | `rideId` |
+| Driver accepts | `ride-events` | `DRIVER_ASSIGNED` | `rideId` |
+| Trip created | `ride-events` | `TRIP_STARTED` | `rideId` |
+| Ride cancelled | `ride-events` | `CANCELLED` | `rideId` |
+| Driver sends GPS | `driver-locations` | GPS payload | `driverId` |
+
+**Consumer groups:**
+- `ride-state-tracker` — consumes `ride-events`, logs all state transitions
+- `driver-location-tracker` — consumes `driver-locations`, logs GPS updates
+
+All ride events are **keyed by `rideId`** so events for the same ride always land in the same partition, guaranteeing ordered processing.
 
 ## Database Schema
 

@@ -3,6 +3,7 @@ package com.gocomet.ridehailing.driver.service;
 import com.gocomet.ridehailing.common.exception.ResourceNotFoundException;
 import com.gocomet.ridehailing.driver.dto.DriverResponse;
 import com.gocomet.ridehailing.driver.dto.LocationUpdateRequest;
+import com.gocomet.ridehailing.driver.event.DriverLocationProducer;
 import com.gocomet.ridehailing.driver.model.Driver;
 import com.gocomet.ridehailing.driver.model.DriverStatus;
 import com.gocomet.ridehailing.driver.repository.DriverRepository;
@@ -21,6 +22,7 @@ public class DriverService {
 
     private final DriverRepository driverRepository;
     private final LocationService locationService;
+    private final DriverLocationProducer driverLocationProducer;
 
     /**
      * Process a location update from a driver.
@@ -41,11 +43,13 @@ public class DriverService {
                     driverId,
                     request.getLatitude(),
                     request.getLongitude(),
-                    driver.getVehicleType().name()
-            );
+                    driver.getVehicleType().name());
         }
 
         driverRepository.save(driver);
+
+        // Publish location update to Kafka
+        driverLocationProducer.publishLocation(driver);
 
         return toResponse(driver);
     }
@@ -67,8 +71,7 @@ public class DriverService {
                     driverId,
                     driver.getCurrentLat(),
                     driver.getCurrentLng(),
-                    driver.getVehicleType().name()
-            );
+                    driver.getVehicleType().name());
         }
 
         log.info("Driver {} is now AVAILABLE", driverId);
