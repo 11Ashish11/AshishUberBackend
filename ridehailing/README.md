@@ -2,6 +2,20 @@
 
 A multi-tenant ride-hailing system (Uber/Ola clone) built as part of the GoComet SDE-2 assignment. Supports real-time driver-rider matching, dynamic surge pricing, trip lifecycle management, and payment processing.
 
+## Requirements Coverage
+
+| Requirement | Status | What's Done | What's Pending |
+|-------------|--------|-------------|----------------|
+| **Real-time driver location ingestion** (1–2 updates/sec) | Partial | `POST /v1/drivers/{id}/location` updates Redis GEO + Postgres; 30s TTL auto-expires stale drivers; WebSocket broadcasts location to frontend | No server-side rate enforcement of 1–2 updates/sec cadence; no driver-side push — purely request-driven (driver must call the API) |
+| **Ride request flow** (pickup, destination, tier, payment method) | Done | `POST /v1/rides` accepts all fields: pickup/destination coords, vehicleTier, paymentMethod, riderId; idempotency keys supported; active ride check prevents double-booking | — |
+| **Dispatch/Matching** (<1s p95, reassign on decline/timeout) | Partial | Redis GEOSEARCH for nearest driver (microsecond queries); distributed lock (SET NX) prevents double-assignment; reassign on decline works — marks DECLINED, unlocks driver, tries next | No timeout-based reassignment — if driver doesn't respond, no scheduler fires to reassign; Redis lock TTL expires silently with no follow-up action; no p95 measurement or enforcement |
+| **Dynamic surge pricing** (per geo-cell, supply–demand) | Partial | Demand counted per geohash cell; surge tiers: 1.0×/1.2×/1.5×/2.0×; applied at ride creation and fare calculation; cached in Redis with TTL | Supply side not factored in — only raw demand count used, not demand/supply ratio; no driver-count-per-cell signal |
+| **Trip lifecycle** (start, pause, end, fare calculation, receipts) | Partial | Trip auto-created on driver accept; `POST /v1/trips/{id}/end` with Haversine fare calc; surge multiplier applied; driver re-added to pool on completion | No PAUSE/RESUME state; no receipt generation (email/PDF); state machine is `IN_PROGRESS → COMPLETED` only |
+| **Payments orchestration** (PSP integration, retries, reconciliation) | Partial | PSP stub simulating Razorpay/Stripe (90% success, random 200–1500ms latency); idempotency keys; status tracking PENDING → PROCESSING → SUCCESS/FAILED | Stub only — no real PSP integration; no retry logic on FAILED payments; no reconciliation job or reporting |
+| **Notifications** (push/SMS for key ride states) | Partial | WebSocket/STOMP push for ride offer, acceptance, fare details on trip end, payment result | No SMS (no Twilio/SNS); no FCM/APNS mobile push; in-app WebSocket only |
+| **Admin/ops tooling** (feature flags, kill-switches, observability) | Not Done | — | No feature flag system; no kill-switches or circuit breakers; no admin endpoints; New Relic mentioned in README but not integrated in code |
+
+
 ## Tech Stack
 
 | Component | Technology |
@@ -246,20 +260,6 @@ If you get a `409 Conflict` error saying "Rider already has an active ride", it 
    WHERE rider_id = '{RIDER_ID}'
    AND status IN ('REQUESTED', 'MATCHING', 'MATCHED', 'ACCEPTED');
    ```
-
-## Requirements Coverage
-
-| Requirement | Status | What's Done | What's Pending |
-|-------------|--------|-------------|----------------|
-| **Real-time driver location ingestion** (1–2 updates/sec) | Partial | `POST /v1/drivers/{id}/location` updates Redis GEO + Postgres; 30s TTL auto-expires stale drivers; WebSocket broadcasts location to frontend | No server-side rate enforcement of 1–2 updates/sec cadence; no driver-side push — purely request-driven (driver must call the API) |
-| **Ride request flow** (pickup, destination, tier, payment method) | Done | `POST /v1/rides` accepts all fields: pickup/destination coords, vehicleTier, paymentMethod, riderId; idempotency keys supported; active ride check prevents double-booking | — |
-| **Dispatch/Matching** (<1s p95, reassign on decline/timeout) | Partial | Redis GEOSEARCH for nearest driver (microsecond queries); distributed lock (SET NX) prevents double-assignment; reassign on decline works — marks DECLINED, unlocks driver, tries next | No timeout-based reassignment — if driver doesn't respond, no scheduler fires to reassign; Redis lock TTL expires silently with no follow-up action; no p95 measurement or enforcement |
-| **Dynamic surge pricing** (per geo-cell, supply–demand) | Partial | Demand counted per geohash cell; surge tiers: 1.0×/1.2×/1.5×/2.0×; applied at ride creation and fare calculation; cached in Redis with TTL | Supply side not factored in — only raw demand count used, not demand/supply ratio; no driver-count-per-cell signal |
-| **Trip lifecycle** (start, pause, end, fare calculation, receipts) | Partial | Trip auto-created on driver accept; `POST /v1/trips/{id}/end` with Haversine fare calc; surge multiplier applied; driver re-added to pool on completion | No PAUSE/RESUME state; no receipt generation (email/PDF); state machine is `IN_PROGRESS → COMPLETED` only |
-| **Payments orchestration** (PSP integration, retries, reconciliation) | Partial | PSP stub simulating Razorpay/Stripe (90% success, random 200–1500ms latency); idempotency keys; status tracking PENDING → PROCESSING → SUCCESS/FAILED | Stub only — no real PSP integration; no retry logic on FAILED payments; no reconciliation job or reporting |
-| **Notifications** (push/SMS for key ride states) | Partial | WebSocket/STOMP push for ride offer, acceptance, fare details on trip end, payment result | No SMS (no Twilio/SNS); no FCM/APNS mobile push; in-app WebSocket only |
-| **Admin/ops tooling** (feature flags, kill-switches, observability) | Not Done | — | No feature flag system; no kill-switches or circuit breakers; no admin endpoints; New Relic mentioned in README but not integrated in code |
-
 ## Documentation
 
 - [HLD/LLD Document](./docs/GoComet_RideHailing_HLD_LLD.docx) — Comprehensive architecture document with diagrams, schema, state machines, and design decisions
