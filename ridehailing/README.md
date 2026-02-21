@@ -1,9 +1,22 @@
 # GoComet Ride-Hailing Platform
 
-A multi-tenant ride-hailing system (Uber/Ola clone) built as part of the GoComet SDE-2 assignment. Supports real-time driver-rider matching, dynamic surge pricing, trip lifecycle management, payment processing, and **event-driven architecture via Apache Kafka**.
+A multi-tenant ride-hailing system (Uber/Ola clone) built as part of the GoComet SDE-2 assignment. Supports real-time driver-rider matching, dynamic surge pricing, trip lifecycle management, payment processing, and event-driven architecture via Apache Kafka.
 
 > 📋 **[End-to-End Testing Guide](./docs/TESTING.md)** — Step-by-step setup and demo walkthrough for reviewers
 
+---
+
+## Deliverables
+
+| Document | Description |
+|----------|-------------|
+| [HLD — High-Level Design](./docs/HLD.md) | Components, data flow, scaling strategy, storage decisions, trade-offs |
+| [LLD — Dispatch/Matching Deep Dive](./docs/LLD.md) | Algorithm, Redis data structures, race conditions, latency budget |
+| [APIs & Events](./docs/API_EVENTS.md) | REST request/response schemas, Kafka event schemas, WebSocket channels |
+| [Data Model](./docs/DATA_MODEL.md) | ERD and full table schemas for all 6 tables with design rationale |
+| [Resilience Plan](./docs/RESILIENCE.md) | Idempotency, locking, TTLs, Kafka error handling, failure mode analysis, production gaps |
+
+---
 
 ## Requirements Coverage
 
@@ -12,13 +25,14 @@ A multi-tenant ride-hailing system (Uber/Ola clone) built as part of the GoComet
 | **Real-time driver location ingestion** | ✅ Done | `POST /v1/drivers/{id}/location` updates Redis GEO index + Postgres; 30s TTL auto-expires stale drivers; WebSocket broadcasts location to frontend map; every GPS ping published to `driver-locations` Kafka topic | No server-side rate enforcement of 1–2 updates/sec cadence; no driver-side push — purely request-driven |
 | **Ride request flow** | ✅ Done | `POST /v1/rides` accepts pickup/destination coords, vehicleTier, paymentMethod, riderId; idempotency keys prevent duplicates; active ride check prevents double-booking; ride event published to `ride-requests` Kafka topic | — |
 | **Dispatch/Matching** | ✅ Done | Redis GEOSEARCH finds nearest driver (microsecond queries); distributed lock (SET NX) prevents double-assignment; reassign on driver decline — marks DECLINED, unlocks driver, tries next; full `REQUESTED → MATCHING → MATCHED → ACCEPTED` state machine | No timeout-based reassignment — if driver goes silent, no scheduler fires to retry; no p95 SLA measurement |
-| **Dynamic surge pricing** | Partial | Demand tracked per geohash cell (1km grid) in Redis with 5min TTL; surge tiers: 1.0×/1.2×/1.5×/2.0× based on demand count; cached per area with 60s TTL; applied at ride creation and fare calculation | Supply side not factored in — only raw demand count, not demand/supply ratio; no driver-count-per-cell signal |
-| **Trip lifecycle** | ✅ Done | Trip auto-created on driver accept; `POST /v1/trips/{id}/end` with Haversine distance + tiered fare calculation; surge multiplier applied to final fare; driver re-added to Redis availability pool on completion; rider notified via WebSocket; `TRIP_COMPLETED` + `TRIP_STARTED` Kafka events published | No PAUSE/RESUME state; no receipt generation (email/PDF) |
-| **Kafka event streaming** | ✅ Done | KRaft-mode Kafka (no ZooKeeper); 3 topics: `ride-events`, `driver-locations`, `ride-requests`; producers publish on every state change; consumers log all events; `ErrorHandlingDeserializer` wraps JsonDeserializer for fault tolerance; type headers ensure correct deserialization per topic | — |
-| **Payments orchestration** | Partial | PSP stub simulating Razorpay/Stripe (90% success, 200–1500ms latency); idempotency keys prevent duplicate charges; full status lifecycle: `PENDING → PROCESSING → SUCCESS/FAILED`; rider notified via WebSocket on outcome | Stub only — no real PSP SDK integration; no automatic retry on FAILED; no reconciliation job |
-| **Notifications** | Partial | WebSocket/STOMP push for: ride offer to driver, driver matched to rider, trip fare on completion, payment result | No SMS (no Twilio); no mobile push (no FCM/APNS); WebSocket only — requires active browser connection |
-| **Admin/ops tooling** | ❌ Not Done | — | No feature flags; no kill-switches; no circuit breakers; no admin endpoints; no APM integration |
+| **Dynamic surge pricing** | Partial | Demand tracked per geohash cell (1km grid) in Redis with 5min TTL; surge tiers: 1.0×/1.2×/1.5×/2.0× based on demand count; cached per area with 60s TTL; applied at ride creation and fare calculation | Supply side not factored in — only raw demand count, not demand/supply ratio |
+| **Trip lifecycle** | ✅ Done | Trip auto-created on driver accept; `POST /v1/trips/{id}/end` with Haversine distance + tiered fare calculation; surge multiplier applied to final fare; driver re-added to Redis pool on completion; `TRIP_COMPLETED` + `TRIP_STARTED` Kafka events published | No PAUSE/RESUME state; no receipt generation (email/PDF) |
+| **Kafka event streaming** | ✅ Done | KRaft-mode Kafka (no ZooKeeper); 3 topics: `ride-events`, `driver-locations`, `ride-requests`; producers publish on every state change; `ErrorHandlingDeserializer` for fault-tolerant consumers | — |
+| **Payments orchestration** | Partial | PSP stub simulating Razorpay/Stripe (90% success, 200–1500ms latency); idempotency keys; full lifecycle: `PENDING → PROCESSING → SUCCESS/FAILED`; rider notified via WebSocket | Stub only — no real PSP SDK; no automatic retry on FAILED; no reconciliation job |
+| **Notifications** | Partial | WebSocket/STOMP push for: ride offer to driver, driver matched to rider, trip fare on completion, payment result | No SMS (no Twilio); no mobile push (no FCM/APNS) |
+| **Admin/ops tooling** | ❌ Not Done | — | No feature flags; no kill-switches; no circuit breakers; no admin endpoints |
 
+---
 
 ## Tech Stack
 
@@ -30,273 +44,43 @@ A multi-tenant ride-hailing system (Uber/Ola clone) built as part of the GoComet
 | Event Streaming | Apache Kafka 3.9 (KRaft mode — no ZooKeeper) |
 | Frontend | React (with WebSocket live updates) |
 | Containerization | Docker Compose |
-| Monitoring | New Relic APM |
 
-## Architecture
+---
 
+## Quick Start
+
+### Prerequisites
+- Java 17+
+- Docker Desktop
+
+### 1. Start Infrastructure
+```bash
+# From repo root (where docker-compose.yml lives)
+docker compose up -d
 ```
-  Rider App (React)              Driver App (React)
-       |                              |
-       | HTTP REST                    | HTTP REST
-       | + WebSocket                  | + WebSocket
-       v                              v
-  +-------------------------------------------+
-  |       Spring Boot Application             |
-  |  (Modular Monolith - 6 modules)          |
-  |                                           |
-  |  [Ride]  [Driver]  [Trip]                |
-  |  [Payment]  [Pricing]  [Notification]    |
-  +-------------------------------------------+
-       |                    |              |
-       v                    v              v
-  [PostgreSQL 16]      [Redis 7]     [Kafka 3.9]
-  (durable state)   (geo, locks)   (event stream)
+Starts Postgres (5433), Redis (6379), Kafka (9092).
+
+### 2. Start Backend
+```bash
+cd ridehailing
+./gradlew bootRun
 ```
+App starts on `http://localhost:8080`. Database is auto-seeded with 2 test riders and 5 test drivers.
 
-**Kafka Topics:**
-```
-ride-events      ← all ride state transitions (key=rideId)
-driver-locations ← high-frequency GPS pings  (key=driverId)
-ride-requests    ← rider booking commands     (key=requestId)
-```
+**→ See [TESTING.md](./docs/TESTING.md) for the full step-by-step demo flow.**
 
-**Why Modular Monolith?** Clean separation of concerns with the operational simplicity of a single deployment. Each module has its own controller, service, repository, and model layers. In production, these can be independently deployed as microservices.
-
-## Core Features
-
-- **Real-time Driver Matching** — Redis GEOSEARCH finds nearest available drivers within 5km in microseconds
-- **Distributed Locking** — Redis SET NX prevents double-assignment of drivers
-- **Dynamic Surge Pricing** — Demand-based multiplier per geo-cell (1km grid)
-- **Trip Lifecycle** — Clean state machine: REQUESTED → MATCHING → MATCHED → ACCEPTED → IN_PROGRESS → COMPLETED
-- **Ride Cancellation** — Cancel rides before trip starts (REQUESTED, MATCHING, MATCHED statuses only)
-- **Payment via PSP Stub** — Simulates Razorpay/Stripe with 90% success rate, random latency, and idempotency
-- **Idempotent APIs** — Both ride creation and payments support idempotency keys to prevent duplicates
-- **WebSocket Live Updates** — STOMP over WebSocket pushes ride status and driver locations to frontend
-- **Haversine Distance** — Accurate fare calculation using great-circle distance formula
-- **Kafka Event Streaming** — Every ride state transition and driver GPS update is published to Kafka for downstream consumers (analytics, billing, notifications)
+---
 
 ## Project Structure
 
 ```
 src/main/java/com/gocomet/ridehailing/
-├── common/                  # Shared config, exceptions, utilities
-│   ├── config/              # Redis, WebSocket, CORS, DataSeeder, KafkaConfig
-│   ├── event/               # RideEvent (shared Kafka event model)
-│   └── exception/           # Global exception handler
-├── driver/                  # Driver profiles, location ingestion
-│   ├── controller/          # POST /v1/drivers/{id}/location, /accept, /online, /offline
-│   ├── event/               # DriverLocationProducer, DriverLocationConsumer
-│   ├── service/             # DriverService, LocationService (Redis GEO)
-│   ├── model/               # Driver entity, DriverStatus, VehicleType
-│   └── repository/
-├── ride/                    # Ride requests and matching
-│   ├── controller/          # POST /v1/rides, GET /v1/rides/{id}
-│   ├── event/               # RideEventProducer, RideEventConsumer
-│   ├── service/             # RideService, MatchingService (the brain)
-│   ├── model/               # Ride, RideAssignment, RideStatus, AssignmentStatus
-│   └── repository/
-├── trip/                    # Trip lifecycle and fare calculation
-│   ├── controller/          # POST /v1/trips/{id}/end
-│   ├── service/             # TripService, FareCalculationService
-│   └── model/               # Trip, TripStatus
-├── payment/                 # Payment orchestration
-│   ├── controller/          # POST /v1/payments
-│   ├── service/             # PaymentService, PspStubService
-│   └── model/               # Payment, PaymentStatus, PaymentMethod
-├── pricing/                 # Surge pricing
-│   └── service/             # SurgePricingService
-└── notification/            # WebSocket push notifications
-    └── service/             # NotificationService
+├── common/         # Kafka config, Redis config, WebSocket, exceptions, RideEvent
+├── driver/         # Driver profiles, location ingestion, geo-index, Kafka producer/consumer
+├── ride/           # Ride creation, matching engine, state machine, Kafka producer/consumer
+├── trip/           # Trip lifecycle, Haversine fare calculation
+├── payment/        # PSP stub, idempotency, payment status tracking
+├── pricing/        # Surge multiplier per geo-cell
+├── notification/   # WebSocket/STOMP push to riders and drivers
+└── rider/          # Rider profiles
 ```
-
-## API Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/v1/riders` | List all riders (for frontend/demo) |
-| GET | `/v1/drivers` | List all drivers (for frontend/demo) |
-| GET | `/v1/config/vehicle-tiers` | List supported vehicle tiers |
-| GET | `/v1/config/payment-methods` | List supported payment methods |
-| POST | `/v1/rides` | Create ride request |
-| GET | `/v1/rides/{id}` | Get ride status |
-| POST | `/v1/rides/{id}/cancel` | Cancel a ride (only REQUESTED, MATCHING, MATCHED statuses) |
-| POST | `/v1/drivers/{id}/location` | Send driver location update |
-| POST | `/v1/drivers/{id}/accept?rideId=` | Accept ride assignment |
-| POST | `/v1/drivers/{id}/decline?rideId=` | Decline ride assignment |
-| POST | `/v1/drivers/{id}/online` | Go online (join matching pool) |
-| POST | `/v1/drivers/{id}/offline` | Go offline |
-| POST | `/v1/trips/{id}/end` | End trip and calculate fare |
-| GET | `/v1/trips/{id}` | Get trip details |
-| POST | `/v1/payments` | Trigger payment flow |
-
-## Quick Start
-
-### Prerequisites
-- Java 17
-- Docker Desktop
-- Node.js (for frontend)
-
-### 1. Start Infrastructure
-
-```bash
-# From project root (where docker-compose.yml is)
-docker compose up -d
-```
-
-This starts:
-- PostgreSQL on port **5433**
-- Redis on port **6379**
-- Kafka (KRaft) on port **9092**
-
-### 2. Start Backend
-
-```bash
-cd ridehailing
-./gradlew bootRun
-```
-
-The app starts on `http://localhost:8080`. On first run, it seeds the database with 2 test riders and 5 test drivers around Bangalore. Kafka topics are auto-created on first message.
-
-### 3. Test the Full Ride Flow
-
-```bash
-# Get rider and driver IDs
-docker exec -it ridehailing-db psql -U admin -d ridehailing \
-  -c "SELECT id, name FROM riders;"
-docker exec -it ridehailing-db psql -U admin -d ridehailing \
-  -c "SELECT id, name, status, vehicle_type FROM drivers;"
-
-# Put a driver online
-curl -X POST http://localhost:8080/v1/drivers/{DRIVER_ID}/online
-
-# Send driver location
-curl -X POST http://localhost:8080/v1/drivers/{DRIVER_ID}/location \
-  -H "Content-Type: application/json" \
-  -d '{"latitude": 12.9352, "longitude": 77.6245}'
-
-# Create a ride
-curl -X POST http://localhost:8080/v1/rides \
-  -H "Content-Type: application/json" \
-  -d '{
-    "riderId": "{RIDER_ID}",
-    "pickupLat": 12.9340,
-    "pickupLng": 77.6200,
-    "destinationLat": 12.9716,
-    "destinationLng": 77.5946,
-    "vehicleTier": "SEDAN",
-    "paymentMethod": "UPI",
-    "idempotencyKey": "ride-001"
-  }'
-
-# Cancel a ride (before trip starts)
-curl -X POST http://localhost:8080/v1/rides/{RIDE_ID}/cancel
-
-# Driver accepts
-curl -X POST "http://localhost:8080/v1/drivers/{DRIVER_ID}/accept?rideId={RIDE_ID}"
-
-# End trip
-curl -X POST http://localhost:8080/v1/trips/{TRIP_ID}/end \
-  -H "Content-Type: application/json" \
-  -d '{"endLat": 12.9716, "endLng": 77.5946}'
-
-# Process payment
-curl -X POST http://localhost:8080/v1/payments \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tripId": "{TRIP_ID}",
-    "paymentMethod": "UPI",
-    "idempotencyKey": "pay-001"
-  }'
-```
-
-## Kafka Event Flow
-
-Every key action in the ride lifecycle automatically publishes a message to Kafka:
-
-| Trigger | Topic | Event Type | Key |
-|---|---|---|---|
-| Rider creates a ride | `ride-events` | `REQUESTED` | `rideId` |
-| Driver accepts | `ride-events` | `DRIVER_ASSIGNED` | `rideId` |
-| Trip created | `ride-events` | `TRIP_STARTED` | `rideId` |
-| Ride cancelled | `ride-events` | `CANCELLED` | `rideId` |
-| Driver sends GPS | `driver-locations` | GPS payload | `driverId` |
-
-**Consumer groups:**
-- `ride-state-tracker` — consumes `ride-events`, logs all state transitions
-- `driver-location-tracker` — consumes `driver-locations`, logs GPS updates
-
-All ride events are **keyed by `rideId`** so events for the same ride always land in the same partition, guaranteeing ordered processing.
-
-## Database Schema
-
-6 tables: `riders`, `drivers`, `rides`, `ride_assignments`, `trips`, `payments`
-
-Key design decisions:
-- **rides vs trips separation** — A ride is the request; a trip is the actual journey. Not every ride becomes a trip.
-- **ride_assignments table** — Tracks the full chain of driver offers (offered → declined → offered → accepted). Enables debugging and fairness analysis.
-- **Idempotency keys** — On both rides and payments to prevent duplicates from network retries.
-
-## Redis Usage
-
-| Key | Purpose |
-|-----|---------|
-| `driver:locations` (GEO) | Spatial index for GEOSEARCH — find nearest drivers in microseconds |
-| `driver:available:{id}` (TTL 30s) | Driver availability — auto-expires if driver stops sending updates |
-| `driver:lock:{id}` (SET NX, TTL 20s) | Distributed lock — prevents double-assignment |
-| `surge:{geohash}` (TTL 60s) | Cached surge multiplier per area |
-| `demand:{geohash}` (TTL 5min) | Request counter for surge calculation |
-
-## Concurrency Handling
-
-| Race Condition | Solution |
-|---------------|----------|
-| Two rides offered to same driver | Redis SET NX distributed lock |
-| Rider creates duplicate rides | Idempotency key + active ride check |
-| Double payment for same trip | Idempotency key + DB unique constraint |
-| Driver accepts expired offer | Assignment status must be OFFERED |
-| Stale driver in pool | TTL auto-expiry on availability keys |
-
-## Ride Cancellation Logic
-
-Riders can cancel rides before the trip officially starts. The cancellation flow:
-
-**Cancellable Statuses:**
-- `REQUESTED` - Ride just created, matching in progress
-- `MATCHING` - System is searching for drivers
-- `MATCHED` - Driver found and offered the ride
-
-**Non-Cancellable Statuses:**
-- `ACCEPTED` - Driver accepted, trip about to start/started (returns 400 error)
-- `IN_PROGRESS` - Trip already started (returns 400 error)
-- `COMPLETED` - Trip finished (returns 400 error)
-- `CANCELLED` - Already cancelled (returns 400 error)
-
-**Cancellation Actions:**
-1. Validates ride exists and is in cancellable status
-2. If a driver was matched/assigned, releases the distributed lock on that driver
-3. Updates ride status to `CANCELLED`
-4. Returns updated ride response
-
-**Handling "Active Ride" Errors:**
-If you get a `409 Conflict` error saying "Rider already has an active ride", it means there's a stale ride from a previous session. Solutions:
-
-1. **Via API** - Find the active ride ID and cancel it:
-   ```bash
-   # Get rider's rides from database
-   docker exec -it ridehailing-db psql -U admin -d ridehailing \
-     -c "SELECT id, status FROM rides WHERE rider_id = '{RIDER_ID}' ORDER BY created_at DESC;"
-
-   # Cancel the active ride
-   curl -X POST http://localhost:8080/v1/rides/{RIDE_ID}/cancel
-   ```
-
-2. **Via Database** - Directly update stale rides:
-   ```sql
-   UPDATE rides
-   SET status = 'CANCELLED'
-   WHERE rider_id = '{RIDER_ID}'
-   AND status IN ('REQUESTED', 'MATCHING', 'MATCHED', 'ACCEPTED');
-   ```
-## Documentation
-
-- [HLD/LLD Document](./docs/GoComet_RideHailing_HLD_LLD.docx) — Comprehensive architecture document with diagrams, schema, state machines, and design decisions
