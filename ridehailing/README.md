@@ -2,6 +2,9 @@
 
 A multi-tenant ride-hailing system (Uber/Ola clone) built as part of the GoComet SDE-2 assignment. Supports real-time driver-rider matching, dynamic surge pricing, trip lifecycle management, payment processing, and **event-driven architecture via Apache Kafka**.
 
+> 📋 **[End-to-End Testing Guide](./docs/TESTING.md)** — Step-by-step setup and demo walkthrough for reviewers
+
+
 ## Requirements Coverage
 
 | Requirement | Status | What's Done | What's Pending |
@@ -20,7 +23,7 @@ A multi-tenant ride-hailing system (Uber/Ola clone) built as part of the GoComet
 
 | Component | Technology |
 |-----------|-----------|
-| Backend | Java 17, Spring Boot 4.0.3 |
+| Backend | Java 17, Spring Boot 3.4.2 |
 | Database | PostgreSQL 16 |
 | Cache/Geo | Redis 7 (GEO index, distributed locks) |
 | Event Streaming | Apache Kafka 3.9 (KRaft mode — no ZooKeeper) |
