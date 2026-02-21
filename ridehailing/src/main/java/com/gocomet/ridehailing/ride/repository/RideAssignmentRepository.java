@@ -15,4 +15,5 @@ public interface RideAssignmentRepository extends JpaRepository<RideAssignment, 
     Optional<RideAssignment> findByRideIdAndDriverId(UUID rideId, UUID driverId);
     Optional<RideAssignment> findByRideIdAndStatus(UUID rideId, AssignmentStatus status);
     boolean existsByRideIdAndDriverId(UUID rideId, UUID driverId);
+    List<RideAssignment> findByDriverIdAndStatus(UUID driverId, AssignmentStatus status);
 }

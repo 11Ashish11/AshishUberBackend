@@ -42,6 +42,7 @@ A multi-tenant ride-hailing system (Uber/Ola clone) built as part of the GoComet
 - **Distributed Locking** — Redis SET NX prevents double-assignment of drivers
 - **Dynamic Surge Pricing** — Demand-based multiplier per geo-cell (1km grid)
 - **Trip Lifecycle** — Clean state machine: REQUESTED → MATCHING → MATCHED → ACCEPTED → IN_PROGRESS → COMPLETED
+- **Ride Cancellation** — Cancel rides before trip starts (REQUESTED, MATCHING, MATCHED statuses only)
 - **Payment via PSP Stub** — Simulates Razorpay/Stripe with 90% success rate, random latency, and idempotency
 - **Idempotent APIs** — Both ride creation and payments support idempotency keys to prevent duplicates
 - **WebSocket Live Updates** — STOMP over WebSocket pushes ride status and driver locations to frontend
@@ -88,7 +89,7 @@ src/main/java/com/gocomet/ridehailing/
 | GET | `/v1/config/payment-methods` | List supported payment methods |
 | POST | `/v1/rides` | Create ride request |
 | GET | `/v1/rides/{id}` | Get ride status |
-| POST | `/v1/rides/{id}/cancel` | Cancel a ride |
+| POST | `/v1/rides/{id}/cancel` | Cancel a ride (only REQUESTED, MATCHING, MATCHED statuses) |
 | POST | `/v1/drivers/{id}/location` | Send driver location update |
 | POST | `/v1/drivers/{id}/accept?rideId=` | Accept ride assignment |
 | POST | `/v1/drivers/{id}/decline?rideId=` | Decline ride assignment |
@@ -154,6 +155,9 @@ curl -X POST http://localhost:8080/v1/rides \
     "idempotencyKey": "ride-001"
   }'
 
+# Cancel a ride (before trip starts)
+curl -X POST http://localhost:8080/v1/rides/{RIDE_ID}/cancel
+
 # Driver accepts
 curl -X POST "http://localhost:8080/v1/drivers/{DRIVER_ID}/accept?rideId={RIDE_ID}"
 
@@ -200,6 +204,61 @@ Key design decisions:
 | Double payment for same trip | Idempotency key + DB unique constraint |
 | Driver accepts expired offer | Assignment status must be OFFERED |
 | Stale driver in pool | TTL auto-expiry on availability keys |
+
+## Ride Cancellation Logic
+
+Riders can cancel rides before the trip officially starts. The cancellation flow:
+
+**Cancellable Statuses:**
+- `REQUESTED` - Ride just created, matching in progress
+- `MATCHING` - System is searching for drivers
+- `MATCHED` - Driver found and offered the ride
+
+**Non-Cancellable Statuses:**
+- `ACCEPTED` - Driver accepted, trip about to start/started (returns 400 error)
+- `IN_PROGRESS` - Trip already started (returns 400 error)
+- `COMPLETED` - Trip finished (returns 400 error)
+- `CANCELLED` - Already cancelled (returns 400 error)
+
+**Cancellation Actions:**
+1. Validates ride exists and is in cancellable status
+2. If a driver was matched/assigned, releases the distributed lock on that driver
+3. Updates ride status to `CANCELLED`
+4. Returns updated ride response
+
+**Handling "Active Ride" Errors:**
+If you get a `409 Conflict` error saying "Rider already has an active ride", it means there's a stale ride from a previous session. Solutions:
+
+1. **Via API** - Find the active ride ID and cancel it:
+   ```bash
+   # Get rider's rides from database
+   docker exec -it ridehailing-db psql -U admin -d ridehailing \
+     -c "SELECT id, status FROM rides WHERE rider_id = '{RIDER_ID}' ORDER BY created_at DESC;"
+
+   # Cancel the active ride
+   curl -X POST http://localhost:8080/v1/rides/{RIDE_ID}/cancel
+   ```
+
+2. **Via Database** - Directly update stale rides:
+   ```sql
+   UPDATE rides
+   SET status = 'CANCELLED'
+   WHERE rider_id = '{RIDER_ID}'
+   AND status IN ('REQUESTED', 'MATCHING', 'MATCHED', 'ACCEPTED');
+   ```
+
+## Requirements Coverage
+
+| Requirement | Status | What's Done | What's Pending |
+|-------------|--------|-------------|----------------|
+| **Real-time driver location ingestion** (1–2 updates/sec) | Partial | `POST /v1/drivers/{id}/location` updates Redis GEO + Postgres; 30s TTL auto-expires stale drivers; WebSocket broadcasts location to frontend | No server-side rate enforcement of 1–2 updates/sec cadence; no driver-side push — purely request-driven (driver must call the API) |
+| **Ride request flow** (pickup, destination, tier, payment method) | Done | `POST /v1/rides` accepts all fields: pickup/destination coords, vehicleTier, paymentMethod, riderId; idempotency keys supported; active ride check prevents double-booking | — |
+| **Dispatch/Matching** (<1s p95, reassign on decline/timeout) | Partial | Redis GEOSEARCH for nearest driver (microsecond queries); distributed lock (SET NX) prevents double-assignment; reassign on decline works — marks DECLINED, unlocks driver, tries next | No timeout-based reassignment — if driver doesn't respond, no scheduler fires to reassign; Redis lock TTL expires silently with no follow-up action; no p95 measurement or enforcement |
+| **Dynamic surge pricing** (per geo-cell, supply–demand) | Partial | Demand counted per geohash cell; surge tiers: 1.0×/1.2×/1.5×/2.0×; applied at ride creation and fare calculation; cached in Redis with TTL | Supply side not factored in — only raw demand count used, not demand/supply ratio; no driver-count-per-cell signal |
+| **Trip lifecycle** (start, pause, end, fare calculation, receipts) | Partial | Trip auto-created on driver accept; `POST /v1/trips/{id}/end` with Haversine fare calc; surge multiplier applied; driver re-added to pool on completion | No PAUSE/RESUME state; no receipt generation (email/PDF); state machine is `IN_PROGRESS → COMPLETED` only |
+| **Payments orchestration** (PSP integration, retries, reconciliation) | Partial | PSP stub simulating Razorpay/Stripe (90% success, random 200–1500ms latency); idempotency keys; status tracking PENDING → PROCESSING → SUCCESS/FAILED | Stub only — no real PSP integration; no retry logic on FAILED payments; no reconciliation job or reporting |
+| **Notifications** (push/SMS for key ride states) | Partial | WebSocket/STOMP push for ride offer, acceptance, fare details on trip end, payment result | No SMS (no Twilio/SNS); no FCM/APNS mobile push; in-app WebSocket only |
+| **Admin/ops tooling** (feature flags, kill-switches, observability) | Not Done | — | No feature flag system; no kill-switches or circuit breakers; no admin endpoints; New Relic mentioned in README but not integrated in code |
 
 ## Documentation
 

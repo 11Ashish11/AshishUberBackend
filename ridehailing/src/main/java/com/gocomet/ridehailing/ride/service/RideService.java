@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -189,15 +190,20 @@ public class RideService {
         tripRepository.save(trip);
 
         // Notify rider
-        notificationService.notifyRider(ride.getRider().getId(), "RIDE_ACCEPTED", Map.of(
-                "rideId", rideId.toString(),
-                "driverName", driver.getName(),
-                "driverId", driverId.toString(),
-                "vehicleType", driver.getVehicleType().name()
+        notificationService.notifyRider(ride.getRider().getId(), "RIDE_ACCEPTED", Map.ofEntries(
+                Map.entry("rideId", rideId.toString()),
+                Map.entry("tripId", trip.getId().toString()),
+                Map.entry("driverName", driver.getName()),
+                Map.entry("driverId", driverId.toString()),
+                Map.entry("vehicleType", driver.getVehicleType().name())
         ));
 
-        log.info("Driver {} accepted ride {}. Trip created.", driverId, rideId);
-        return toResponse(ride);
+        log.info("Driver {} accepted ride {}. Trip {} created.", driverId, rideId, trip.getId());
+
+        // Build response with tripId
+        RideResponse response = toResponse(ride);
+        response.setTripId(trip.getId());
+        return response;
     }
 
     /**
@@ -225,6 +231,42 @@ public class RideService {
 
         log.info("Ride {} cancelled", rideId);
         return toResponse(ride);
+    }
+
+    /**
+     * Get pending ride offers for a driver.
+     * Returns rides that have been offered to this driver but not yet accepted/declined.
+     */
+    public List<Map<String, Object>> getPendingOffersForDriver(UUID driverId) {
+        // Validate driver exists
+        Driver driver = driverRepository.findById(driverId)
+                .orElseThrow(() -> new ResourceNotFoundException("Driver", "id", driverId));
+
+        // Find all OFFERED assignments for this driver
+        List<RideAssignment> pendingAssignments = rideAssignmentRepository
+                .findByDriverIdAndStatus(driverId, AssignmentStatus.OFFERED);
+
+        // Build response for each pending offer
+        return pendingAssignments.stream()
+                .map(assignment -> {
+                    Ride ride = assignment.getRide();
+                    Map<String, Object> offer = Map.ofEntries(
+                            Map.entry("type", "RIDE_OFFER"),
+                            Map.entry("rideId", ride.getId().toString()),
+                            Map.entry("riderId", ride.getRider().getId().toString()),
+                            Map.entry("pickupLat", ride.getPickupLat()),
+                            Map.entry("pickupLng", ride.getPickupLng()),
+                            Map.entry("destinationLat", ride.getDestinationLat()),
+                            Map.entry("destinationLng", ride.getDestinationLng()),
+                            Map.entry("vehicleTier", ride.getVehicleTier().name()),
+                            Map.entry("estimatedFare", ride.getEstimatedFare()),
+                            Map.entry("surgeMultiplier", ride.getSurgeMultiplier()),
+                            Map.entry("assignmentStatus", "OFFERED"),
+                            Map.entry("offeredAt", assignment.getOfferedAt().toString())
+                    );
+                    return offer;
+                })
+                .collect(Collectors.toList());
     }
 
     private RideResponse toResponse(Ride ride) {

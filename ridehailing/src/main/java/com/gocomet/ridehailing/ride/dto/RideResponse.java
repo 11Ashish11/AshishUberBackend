@@ -25,6 +25,7 @@ public class RideResponse {
     private RideStatus status;
     private UUID assignedDriverId;
     private String assignedDriverName;
+    private UUID tripId;
     private BigDecimal surgeMultiplier;
     private BigDecimal estimatedFare;
     private LocalDateTime createdAt;

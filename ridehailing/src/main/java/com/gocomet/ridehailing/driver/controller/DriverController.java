@@ -34,6 +34,14 @@ public class DriverController {
     }
 
     /**
+     * GET /v1/drivers/{id}/pending-offers — Get pending ride offers for driver
+     */
+    @GetMapping("/{id}/pending-offers")
+    public ResponseEntity<?> getPendingOffers(@PathVariable UUID id) {
+        return ResponseEntity.ok(rideService.getPendingOffersForDriver(id));
+    }
+
+    /**
      * POST /v1/drivers/{id}/location — Send driver location update
      */
     @PostMapping("/{id}/location")
