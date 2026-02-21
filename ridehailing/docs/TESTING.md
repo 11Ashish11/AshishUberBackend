@@ -210,31 +210,36 @@ docker exec ridehailing-kafka kafka-topics --bootstrap-server localhost:9092 --l
 
 ## Troubleshooting
 
-### `409 Conflict — Rider already has an active ride`
+### ⚠️ `409 Conflict — Rider already has an active ride` (most common)
 
-A stale ride from a previous session exists. Find and cancel it:
+This happens when a previous test run left a ride unfinished. **One command fixes it:**
 
 ```bash
-# Find it
+# Cancel ALL stale active rides for Ashish (safe to run anytime)
 docker exec ridehailing-db psql -U admin -d ridehailing \
-  -c "SELECT id, status FROM rides WHERE rider_id = '3f4e8c82-a590-4328-9066-5233c914b34e' ORDER BY created_at DESC LIMIT 3;"
-
-# Force cancel via DB if the API cancel returns 409
-docker exec ridehailing-db psql -U admin -d ridehailing \
-  -c "UPDATE rides SET status = 'CANCELLED' WHERE id = '<RIDE_ID>';"
+  -c "UPDATE rides SET status = 'CANCELLED' WHERE rider_id = '3f4e8c82-a590-4328-9066-5233c914b34e' AND status NOT IN ('CANCELLED','COMPLETED','NO_DRIVERS_AVAILABLE','EXPIRED');"
 ```
+
+Then go back to **Step 5a** and start fresh.
+
+> **Why can't I use the cancel API?** `POST /v1/rides/{id}/cancel` only works for rides in `REQUESTED`, `MATCHING`, or `MATCHED` status. If a previous test left the ride in `ACCEPTED` status (driver accepted it), the API rejects it — the DB update above bypasses this.
+
+---
 
 ### `NO_DRIVERS_AVAILABLE`
 
-The driver's location was not in Redis. Always run step 5a (send location) **before** creating a ride.
+The driver's location was not registered in Redis (it resets on Docker restart). Run **Step 5a first** — always send the driver's location before creating a ride.
+
+---
 
 ### Kafka consumer errors on startup
 
-Stale messages from a previous session. Delete and recreate the problem topic:
+Stale messages from a previous Docker session. Delete and recreate the problem topic:
 ```bash
 docker exec ridehailing-kafka kafka-topics --bootstrap-server localhost:9092 --delete --topic ride-events
 # Kafka will auto-recreate it on next message
 ```
+
 
 ---
 

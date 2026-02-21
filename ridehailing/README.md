@@ -6,6 +6,14 @@ A multi-tenant ride-hailing system (Uber/Ola clone) built as part of the GoComet
 
 ---
 
+## Demo
+
+https://github.com/user-attachments/assets/BackendDemoAPI.mov
+
+> ⚠️ **Note:** The video above will render as an inline player once pushed to GitHub. If viewing locally, open [`docs/BackendDemoAPI.mov`](./docs/BackendDemoAPI.mov) directly.
+
+---
+
 ## Deliverables
 
 | Document | Description |
